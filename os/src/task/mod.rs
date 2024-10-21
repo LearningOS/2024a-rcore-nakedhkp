@@ -14,8 +14,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -79,6 +82,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.start_time = get_time_ms();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -143,6 +147,10 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+
+            if inner.tasks[current].start_time == 0 {
+                inner.tasks[current].start_time = get_time_ms();
+            }
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -153,7 +161,34 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    fn update_task_info_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_count[syscall_id] += 1;
+    }
+    
+    fn get_task_info_count(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+    
+        inner.tasks[current].syscall_count
+       
+    }
+    
+    fn get_task_info_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].start_time
+    }
+    
+    fn get_current_memset(&self) -> *mut MemorySet {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let current_mem = &mut inner.tasks[current].memory_set as *mut MemorySet;
+        current_mem
+    }
 }
+
 
 /// Run the first task in task list.
 pub fn run_first_task() {
@@ -201,4 +236,21 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Update task's syscall count
+pub fn update_task_info_count(syscall_id: usize) {
+    TASK_MANAGER.update_task_info_count(syscall_id);
+}
+/// Get task's syscall count
+pub fn get_task_info_count() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_task_info_count()
+}
+/// Get task's time 
+pub fn get_task_info_time() -> usize {
+    TASK_MANAGER.get_task_info_time()
+}
+/// Get task's mem
+pub fn get_current_memset() -> *mut MemorySet {
+    TASK_MANAGER.get_current_memset()
 }

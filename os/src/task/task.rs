@@ -1,9 +1,10 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
+use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
 
 /// The task control block (TCB) of a task.
@@ -13,6 +14,12 @@ pub struct TaskControlBlock {
 
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
+
+    /// The task syscall times
+    pub syscall_count: [u32; MAX_SYSCALL_NUM],
+    
+    /// The task start time
+    pub start_time: usize,
 
     /// Application address space
     pub memory_set: MemorySet,
@@ -63,6 +70,8 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_count: [0u32; MAX_SYSCALL_NUM],
+            start_time: get_time_ms(),
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
