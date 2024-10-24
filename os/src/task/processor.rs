@@ -4,11 +4,18 @@
 //! the current running state of CPU is recorded,
 //! and the replacement and transfer of control flow of different applications are executed.
 
+
+
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::config::MAX_SYSCALL_NUM;
+use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
+
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
+
 use alloc::sync::Arc;
 use lazy_static::*;
 
@@ -44,6 +51,41 @@ impl Processor {
     pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
         self.current.as_ref().map(Arc::clone)
     }
+    ///Update the system call count of the current task
+    pub fn update_task_info_count(&self, syscall_id: usize) {
+        if let Some(current_task) = &self.current {
+            let mut inner = current_task.inner_exclusive_access();
+            inner.syscall_count[syscall_id] += 1;
+        }
+    }
+
+    ///Get the system call count of count of the current task
+    pub fn get_task_info_count(&self) -> [u32; MAX_SYSCALL_NUM] {
+        if let Some(current_task) = self.current() {
+            let inner = current_task.inner_exclusive_access();
+            inner.syscall_count
+        } else {
+            [0; MAX_SYSCALL_NUM]
+        }
+    }
+
+    /// Get the start time of the current task
+    pub fn get_task_info_time(&self) -> usize {
+        if let Some(current_task) = self.current() {
+            let inner = current_task.inner_exclusive_access();
+            inner.start_time
+        } else {
+            0
+        }
+    }
+
+    /// Get current memory_set
+    pub fn get_current_memset(&self) -> *mut MemorySet {
+        let current = self.current().unwrap();
+        let mut inner = current.inner_exclusive_access();
+        let cureent_mem = &mut inner.memory_set as *mut MemorySet;
+        cureent_mem
+    }
 }
 
 lazy_static! {
@@ -61,6 +103,8 @@ pub fn run_tasks() {
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
+
+            task_inner.start_time = get_time_ms();
             // release coming task_inner manually
             drop(task_inner);
             // release coming task TCB manually
@@ -108,4 +152,24 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+/// Update task's syscall count
+pub fn update_task_info_count(syscall_id: usize) {
+    PROCESSOR.exclusive_access().update_task_info_count(syscall_id);
+}
+
+/// Get task's syscall count
+pub fn get_task_info_count() -> [u32; MAX_SYSCALL_NUM] {
+    PROCESSOR.exclusive_access().get_task_info_count()
+}
+
+/// Get task's time 
+pub fn get_task_info_time() -> usize {
+    PROCESSOR.exclusive_access().get_task_info_time()
+}
+
+/// Get task's mem
+pub fn get_current_memset() -> *mut MemorySet {
+    PROCESSOR.exclusive_access().get_current_memset()
 }
