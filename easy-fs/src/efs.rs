@@ -20,6 +20,10 @@ pub struct EasyFileSystem {
 type DataBlock = [u8; BLOCK_SZ];
 /// An easy fs over a block device
 impl EasyFileSystem {
+    /// Get inode start block
+    pub fn get_inode_start_block(&self) -> u32 {
+        self.inode_area_start_block
+    }
     /// A data block of block size
     pub fn create(
         block_device: Arc<dyn BlockDevice>,
@@ -29,10 +33,14 @@ impl EasyFileSystem {
         // calculate block size of areas & create bitmaps
         let inode_bitmap = Bitmap::new(1, inode_bitmap_blocks as usize);
         let inode_num = inode_bitmap.maximum();
+        // 存储所有inode所需的块数
         let inode_area_blocks =
             ((inode_num * core::mem::size_of::<DiskInode>() + BLOCK_SZ - 1) / BLOCK_SZ) as u32;
+        // 所有与inode相关的块总数
         let inode_total_blocks = inode_bitmap_blocks + inode_area_blocks;
+        // 数据区域的块总数
         let data_total_blocks = total_blocks - 1 - inode_total_blocks;
+        // 用于管理数据块的位图所需的块数
         let data_bitmap_blocks = (data_total_blocks + 4096) / 4097;
         let data_area_blocks = data_total_blocks - data_bitmap_blocks;
         let data_bitmap = Bitmap::new(
@@ -112,12 +120,14 @@ impl EasyFileSystem {
         Inode::new(block_id, block_offset, Arc::clone(efs), block_device)
     }
     /// Get inode by id
+    /// 根据给定的索引结点ID，计算并返回该索引节点在磁盘上的具体位置
     pub fn get_disk_inode_pos(&self, inode_id: u32) -> (u32, usize) {
         let inode_size = core::mem::size_of::<DiskInode>();
         let inodes_per_block = (BLOCK_SZ / inode_size) as u32;
         let block_id = self.inode_area_start_block + inode_id / inodes_per_block;
         (
             block_id,
+            // 索引结点在数据块内的字节偏移量
             (inode_id % inodes_per_block) as usize * inode_size,
         )
     }

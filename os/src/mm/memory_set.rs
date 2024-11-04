@@ -78,6 +78,50 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
+
+    /// Assume that no conflicts
+    pub fn delete_frame_area(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission
+    ) {
+        self.pop(MapArea::new(start_va, end_va, MapType::Framed, permission));
+    }
+
+
+    /// check if virtual address range is fully unmapped
+    pub fn all_unmapped(&mut self, start_va: VirtPageNum, end_va: VirtPageNum) -> bool {
+        for vpn in VPNRange::new(start_va, end_va) {
+            if let Some(pte) = self.page_table.translate(vpn) {
+                if pte.is_valid() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    
+     /// check if virtual address range is fully mapped
+    pub fn all_mapped(&mut self, start_va: VirtPageNum, end_va: VirtPageNum) -> bool {
+        for vpn in VPNRange::new(start_va, end_va) {
+            // 如果 translate 返回 None，说明该页没有映射
+            if let Some(pte) = self.page_table.translate(vpn) {
+                if !pte.is_valid() {
+                    return false;
+                }
+            } else {
+                return false; // 没有页表项，即该页未映射
+            }
+        }
+        true
+    }
+
+    /// pop
+    fn pop(&mut self, mut map_area: MapArea) {
+        map_area.unmap(&mut self.page_table);
+    }
+    
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
     /// space.
