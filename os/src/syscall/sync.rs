@@ -2,6 +2,7 @@ use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
+use alloc::vec;
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -71,9 +72,36 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    let deadlock_detection_enabled = process_inner.deadlock_detection_enabled;
+
     drop(process_inner);
-    drop(process);
-    mutex.lock();
+
+
+
+
+    if deadlock_detection_enabled {
+        let task = current_task().unwrap();
+        {
+            let mut task_inner = task.inner_exclusive_access();
+            task_inner.requested_mutexes[mutex_id] += 1;
+            drop(task_inner); 
+        }
+
+        if detect_deadlock_mutex() {
+            let mut task_inner = task.inner_exclusive_access();
+            task_inner.requested_mutexes[mutex_id] -= 1;
+            return -0xDEAD;
+        }
+
+        mutex.lock();
+        let mut task_inner = task.inner_exclusive_access();
+        task_inner.requested_mutexes[mutex_id] -= 1;
+        task_inner.held_mutexes[mutex_id] += 1;
+    } else {
+        mutex.lock();
+    }
+
+
     0
 }
 /// mutex unlock syscall
@@ -92,6 +120,14 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
+
+    if process_inner.deadlock_detection_enabled {
+        task_inner.held_mutexes[mutex_id] -= 1;
+    }
+
     drop(process_inner);
     drop(process);
     mutex.unlock();
@@ -145,6 +181,14 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_exclusive_access();
+
+    if process_inner.deadlock_detection_enabled {
+        task_inner.held_semaphore[sem_id] -= 1;
+    }
+    
     drop(process_inner);
     sem.up();
     0
@@ -165,8 +209,37 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+    let deadlock_detection_enabled = process_inner.deadlock_detection_enabled;
+
     drop(process_inner);
-    sem.down();
+
+
+
+    if deadlock_detection_enabled {
+        let task = current_task().unwrap();
+        {
+       
+            let mut task_inner = task.inner_exclusive_access();
+            task_inner.requested_semaphore[sem_id] += 1;
+            drop(task_inner); 
+        }
+
+        if detect_deadlock_semaphore() {
+            let mut task_inner = task.inner_exclusive_access();
+            task_inner.requested_semaphore[sem_id] -= 1;
+            return  -0xDEAD;
+        }
+
+        sem.down();
+
+        let mut task_inner = task.inner_exclusive_access();
+        task_inner.requested_semaphore[sem_id] -= 1;
+        task_inner.held_semaphore[sem_id] += 1;
+
+    } else {
+        sem.down();
+    }
+
     0
 }
 /// condvar create syscall
@@ -246,6 +319,202 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
 pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
-    trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+    trace!("kernel: sys_enable_deadlock_detect");
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+
+    match _enabled {
+        0 => {
+            process_inner.deadlock_detection_enabled = false;
+            0
+        }
+        1 => {
+            process_inner.deadlock_detection_enabled = true;
+            0
+        }
+        _ => {
+            -1
+        }
+    }
+}
+
+fn detect_deadlock_mutex() -> bool {
+
+    let process = current_process();
+    let process_inner = process.inner_exclusive_access();
+
+    let tasks = &process_inner.tasks;
+    let mutexes = &process_inner.mutex_list;
+
+
+    let n = tasks.len(); 
+    let m = mutexes.len(); 
+
+    let mut available = vec![1; m];
+    let mut allocation = vec![vec![0; m]; n];
+    let mut need = vec![vec![0; m]; n];
+
+
+    for (i, task_option) in tasks.iter().enumerate() {
+        if let Some(task) = task_option {
+            let task_inner = task.inner_exclusive_access();
+
+            // 更新 Allocation 矩阵
+            for (j, &count) in task_inner.held_mutexes.iter().enumerate() {
+                if j < m {
+                    allocation[i][j] = count;
+                }
+            }
+
+            // 更新 Need 矩阵
+            for (j, &count) in task_inner.requested_mutexes.iter().enumerate() {
+                if j < m {
+                    need[i][j] = count;
+                }
+            }
+        }
+    }
+
+    drop(process_inner);
+
+
+    for j in 0..m {
+        let mut allocated = 0;
+        for i in 0..n {
+            allocated += allocation[i][j];
+        }
+        // 对于互斥锁，总量为 1
+        available[j] = 1 - allocated;
+    }
+
+
+    let mut finish = vec![false; n];
+
+
+    loop {
+        let mut found = false;
+        for i in 0..n {
+            if !finish[i] {
+                let mut can_finish = true;
+                for j in 0..m {
+                    if need[i][j] > available[j] {
+                        can_finish = false;
+                        break;
+                    }
+                }
+                if can_finish {
+                    for j in 0..m {
+                        available[j] += allocation[i][j];
+                    }
+                    finish[i] = true;
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            break;
+        }
+    }
+
+
+    for i in 0..n {
+        if !finish[i] {
+            return true; 
+        }
+    }
+
+    false 
+}
+
+fn detect_deadlock_semaphore() -> bool {
+    let process = current_process();
+    let process_inner = process.inner_exclusive_access();
+
+    let tasks = &process_inner.tasks;
+    let semaphores = &process_inner.semaphore_list;
+
+    let n = tasks.len(); // 线程数
+    let m = semaphores.len(); // 信号量数
+
+    let mut available = vec![0; m];
+    let mut allocation = vec![vec![0; m]; n];
+    let mut need = vec![vec![0; m]; n];
+    let mut total = vec![0; m];
+
+
+    for (j, sem_option) in semaphores.iter().enumerate() {
+        if let Some(sem) = sem_option {
+            total[j] = sem.initial_count;
+        }
+    }
+
+    for (i, task_option) in tasks.iter().enumerate() {
+        if let Some(task) = task_option {
+            let task_inner = task.inner_exclusive_access();
+
+      
+            for (j, &count) in task_inner.held_semaphore.iter().enumerate() {
+                if j < m {
+                    allocation[i][j] = count;
+                }
+            }
+
+        
+            for (j, &count) in task_inner.requested_semaphore.iter().enumerate() {
+                if j < m {
+                    need[i][j] = count;
+                }
+            }
+        }
+    }
+
+    drop(process_inner);
+
+
+    for j in 0..m {
+        let mut allocated = 0;
+        for i in 0..n {
+            allocated += allocation[i][j];
+        }
+        
+        available[j] = total[j] - allocated;
+    }
+
+  
+    let mut finish = vec![false; n];
+
+    
+    loop {
+        let mut found = false;
+        for i in 0..n {
+            if !finish[i] {
+                let mut can_finish = true;
+                for j in 0..m {
+                    if need[i][j] > available[j] {
+                        can_finish = false;
+                        break;
+                    }
+                }
+                if can_finish {
+            
+                    for j in 0..m {
+                        available[j] += allocation[i][j];
+                    }
+                    finish[i] = true;
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            break;
+        }
+    }
+
+    for i in 0..n {
+        if !finish[i] {
+            return true;
+        }
+    }
+
+    false 
 }

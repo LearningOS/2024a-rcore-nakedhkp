@@ -6,6 +6,8 @@ use alloc::{collections::VecDeque, sync::Arc};
 
 /// semaphore structure
 pub struct Semaphore {
+    /// total count
+    pub initial_count: usize,
     /// semaphore inner
     pub inner: UPSafeCell<SemaphoreInner>,
 }
@@ -20,6 +22,7 @@ impl Semaphore {
     pub fn new(res_count: usize) -> Self {
         trace!("kernel: Semaphore::new");
         Self {
+            initial_count: res_count,
             inner: unsafe {
                 UPSafeCell::new(SemaphoreInner {
                     count: res_count as isize,
@@ -30,6 +33,7 @@ impl Semaphore {
     }
 
     /// up operation of semaphore
+    /// 进程使用完资源后，通过signal原语释放
     pub fn up(&self) {
         trace!("kernel: Semaphore::up");
         let mut inner = self.inner.exclusive_access();
@@ -42,6 +46,7 @@ impl Semaphore {
     }
 
     /// down operation of semaphore
+    /// 某进程需要使用资源时，通过wait申请
     pub fn down(&self) {
         trace!("kernel: Semaphore::down");
         let mut inner = self.inner.exclusive_access();
