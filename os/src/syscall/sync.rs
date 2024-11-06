@@ -83,6 +83,9 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
         let task = current_task().unwrap();
         {
             let mut task_inner = task.inner_exclusive_access();
+            if mutex_id >= task_inner.requested_mutexes.len() {
+                task_inner.requested_mutexes.resize(mutex_id + 1, 0);
+            }
             task_inner.requested_mutexes[mutex_id] += 1;
             drop(task_inner); 
         }
@@ -96,6 +99,9 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
         mutex.lock();
         let mut task_inner = task.inner_exclusive_access();
         task_inner.requested_mutexes[mutex_id] -= 1;
+        if mutex_id >= task_inner.held_mutexes.len() {
+            task_inner.held_mutexes.resize(mutex_id + 1, 0);
+        }
         task_inner.held_mutexes[mutex_id] += 1;
     } else {
         mutex.lock();
@@ -220,6 +226,9 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
         {
        
             let mut task_inner = task.inner_exclusive_access();
+            if sem_id >= task_inner.requested_semaphore.len() {
+                task_inner.requested_semaphore.resize(sem_id + 1, 0);
+            }
             task_inner.requested_semaphore[sem_id] += 1;
             drop(task_inner); 
         }
@@ -234,6 +243,9 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
 
         let mut task_inner = task.inner_exclusive_access();
         task_inner.requested_semaphore[sem_id] -= 1;
+        if sem_id >= task_inner.held_semaphore.len() {
+            task_inner.held_semaphore.resize(sem_id + 1, 0);
+        }
         task_inner.held_semaphore[sem_id] += 1;
 
     } else {
